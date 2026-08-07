@@ -221,6 +221,25 @@ const RiskGauge = ({ score, label, size = 120 }) => {
 /* ==============================================================
    MAIN COMPONENT
    ============================================================== */
+const fillSeries = (value) => Array.from({ length: 24 }, (_, i) => ({ hour: `${String(i).padStart(2, '0')}:00`, value }))
+
+const normalizePatient = (patient) => ({
+  ...patient,
+  comorbidities: Array.isArray(patient.comorbidities) ? patient.comorbidities : [],
+  riskScore6h: Number(patient.riskScore6h ?? 0.1),
+  riskScore12h: Number(patient.riskScore12h ?? 0.05),
+  riskScore24h: Number(patient.riskScore24h ?? 0.02),
+  riskCategory: patient.riskCategory || 'LOW',
+  alertTriggered: Boolean(patient.alertTriggered),
+  vitals: {
+    heartRate: Array.isArray(patient.vitals?.heartRate) && patient.vitals.heartRate.length ? patient.vitals.heartRate : fillSeries(80),
+    systolicBP: Array.isArray(patient.vitals?.systolicBP) && patient.vitals.systolicBP.length ? patient.vitals.systolicBP : fillSeries(120),
+    spo2: Array.isArray(patient.vitals?.spo2) && patient.vitals.spo2.length ? patient.vitals.spo2 : fillSeries(96),
+    respiratoryRate: Array.isArray(patient.vitals?.respiratoryRate) && patient.vitals.respiratoryRate.length ? patient.vitals.respiratoryRate : fillSeries(18),
+    temperature: Array.isArray(patient.vitals?.temperature) && patient.vitals.temperature.length ? patient.vitals.temperature : fillSeries(37),
+  },
+})
+
 export default function DoctorDashboard() {
   const navigate = useNavigate()
   const [selectedId, setSelectedId]     = useState(null)
@@ -233,7 +252,20 @@ export default function DoctorDashboard() {
   const [clock, setClock]               = useState(new Date())
   const [alertsOpen, setAlertsOpen]     = useState(false)
   const [ackedAlerts, setAckedAlerts]   = useState(new Set())
+  const [remotePatients, setRemotePatients] = useState([])
   const [simAnimating, setSimAnimating] = useState(false)
+
+  const refreshRemotePatients = async () => {
+    try {
+      const res = await fetch('/api/patients')
+      if (!res.ok) throw new Error('failed to fetch')
+      const data = await res.json()
+      setRemotePatients(Array.isArray(data) ? data : [])
+    } catch (err) {
+      console.warn('Doctor dashboard patient refresh failed', err)
+      setRemotePatients([])
+    }
+  }
 
   useEffect(() => {
     const t = setInterval(() => setClock(new Date()), 1000)
@@ -241,14 +273,27 @@ export default function DoctorDashboard() {
   }, [])
 
   // Set default selected patient (first critical or first overall)
+  const allPatients = useMemo(() => {
+    const map = new Map()
+    patients.forEach(p => map.set(p.id, p))
+    remotePatients.forEach(p => map.set(p.id, normalizePatient(p)))
+    return Array.from(map.values())
+  }, [remotePatients])
+
   useEffect(() => {
-    if (!selectedId && patients.length > 0) {
-      const firstCritical = patients.find(p => p.riskCategory === 'CRITICAL')
-      setSelectedId(firstCritical?.id ?? patients[0].id)
+    if (!selectedId && allPatients.length > 0) {
+      const firstCritical = allPatients.find(p => p.riskCategory === 'CRITICAL')
+      setSelectedId(firstCritical?.id ?? allPatients[0].id)
     }
+  }, [selectedId, allPatients])
+
+  useEffect(() => {
+    refreshRemotePatients()
+    const interval = setInterval(refreshRemotePatients, 20000)
+    return () => clearInterval(interval)
   }, [])
 
-  const patient = patients.find(p => p.id === selectedId)
+  const patient = allPatients.find(p => p.id === selectedId)
 
   // Reset twin sliders when patient changes
   useEffect(() => {
@@ -265,7 +310,7 @@ export default function DoctorDashboard() {
 
   /* ---- Filtered + searched patients ---- */
   const filteredPatients = useMemo(() =>
-    patients.filter(p => {
+    allPatients.filter(p => {
       const matchFilter = filter === 'ALL' || p.riskCategory === filter
       const q = searchQuery.toLowerCase().trim()
       const matchSearch = !q ||
@@ -274,13 +319,13 @@ export default function DoctorDashboard() {
         p.ward.toLowerCase().includes(q) ||
         p.bed.toLowerCase().includes(q)
       return matchFilter && matchSearch
-    }), [filter, searchQuery])
+    }), [allPatients, filter, searchQuery])
 
   /* ---- Stats ---- */
-  const alertCount     = patients.filter(p => p.alertTriggered).length
-  const avgRisk        = patients.reduce((s, p) => s + p.riskScore6h, 0) / patients.length
-  const improvedCount  = patients.filter(p => p.riskScore6h < p.riskScore24h).length
-  const activeAlerts   = patients.filter(p => p.alertTriggered && !ackedAlerts.has(p.id))
+  const alertCount     = allPatients.filter(p => p.alertTriggered).length
+  const avgRisk        = allPatients.reduce((s, p) => s + p.riskScore6h, 0) / Math.max(1, allPatients.length)
+  const improvedCount  = allPatients.filter(p => p.riskScore6h < p.riskScore24h).length
+  const activeAlerts   = allPatients.filter(p => p.alertTriggered && !ackedAlerts.has(p.id))
 
   const riskClass = getRiskClass(patient?.riskCategory ?? 'LOW')
   const notes     = SYNTHETIC_NOTES(patient)

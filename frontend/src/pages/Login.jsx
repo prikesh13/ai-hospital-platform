@@ -3,12 +3,31 @@ import {
   Activity, Stethoscope, BarChart3, ChevronRight,
   Shield, Brain, Cpu, Heart, Zap,
 } from 'lucide-react'
+import ShapesDots from '../components/ShapesDots'
 
 export default function Login() {
   const navigate = useNavigate()
 
   return (
-    <div className="login-page">
+    <ShapesDots
+      cellSize={40}
+      influenceRadiusVmin={25}
+      attackTime={0.05}
+      releaseTime={0.2}
+      idleScale={0.1}
+      minPeakScale={1}
+      maxPeakScale={3}
+      burstSpeed={1200}
+      burstThickness={180}
+      backgroundColor="transparent"
+      shapes={["circle","triangle","square"]}
+      dpr={3}
+      opacity={1}
+      animationMode="off"
+      animationSpeed={1}
+      overlapGuard={0.86}
+      className="login-page"
+    >
       <div className="login-bg-gradient" />
       <div className="login-bg-grid" />
 
@@ -126,6 +145,6 @@ export default function Login() {
           Research Prototype — All data is synthetic — Not for clinical use
         </div>
       </div>
-    </div>
+    </ShapesDots>
   )
 }

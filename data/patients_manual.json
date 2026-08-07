@@ -1,0 +1,38 @@
+[
+  {
+    "id": "P-2001",
+    "name": "Theon",
+    "age": 60,
+    "gender": "M",
+    "ward": "MICU",
+    "bed": "21",
+    "admitTime": "2026-08-06T07:54:07.836Z",
+    "diagnosis": "Cardiac",
+    "comorbidities": [],
+    "riskScore6h": 0.1,
+    "riskScore12h": 0.05,
+    "riskScore24h": 0.02,
+    "riskCategory": "LOW",
+    "alertTriggered": false,
+    "isSepsis": false,
+    "vitals": {}
+  },
+  {
+    "id": "P-2001",
+    "name": "Theon",
+    "age": 60,
+    "gender": "M",
+    "ward": "MICU",
+    "bed": "21",
+    "admitTime": "2026-08-06T07:59:14.727Z",
+    "diagnosis": "Cardiac",
+    "comorbidities": [],
+    "riskScore6h": 0.1,
+    "riskScore12h": 0.05,
+    "riskScore24h": 0.02,
+    "riskCategory": "LOW",
+    "alertTriggered": false,
+    "isSepsis": false,
+    "vitals": {}
+  }
+]

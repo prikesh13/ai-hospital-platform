@@ -18,6 +18,7 @@ Age | Gender | Unit1 | Unit2 | HospAdmTime | ICULOS | SepsisLabel
 Source: https://physionet.org/content/challenge-2019/1.0.0/
 """
 
+import csv
 import os
 import json
 import math
@@ -29,6 +30,39 @@ OUT_FILE = os.path.join(
     os.path.dirname(__file__),
     "..", "frontend", "src", "data", "realData.js"
 )
+TRAIN_OUT_FILE = os.path.join(os.path.dirname(__file__), "train_data.csv")
+TRAIN_FIELDS = [
+    "patient_id",
+    "age",
+    "gender",
+    "unit1",
+    "unit2",
+    "icu_hours",
+    "hr_last",
+    "hr_mean",
+    "hr_min",
+    "hr_max",
+    "sbp_last",
+    "sbp_mean",
+    "sbp_min",
+    "sbp_max",
+    "o2_last",
+    "o2_mean",
+    "o2_min",
+    "o2_max",
+    "temp_last",
+    "temp_mean",
+    "temp_min",
+    "temp_max",
+    "resp_last",
+    "resp_mean",
+    "resp_min",
+    "resp_max",
+    "lac_last",
+    "creatinine_last",
+    "wbc_last",
+    "label",
+]
 
 COLUMNS = [
     "HR","O2Sat","Temp","SBP","MAP","DBP","Resp","EtCO2",
@@ -258,6 +292,61 @@ def make_labs(cols: dict) -> list:
     return labs[:8]  # cap at 8 labs
 
 
+def summary_stats(series: list) -> dict:
+    """Compute last, mean, min, and max for a numeric series."""
+    filled = forward_fill(series)
+    values = [v for v in filled if v is not None]
+    if not values:
+        return {"last": None, "mean": None, "min": None, "max": None}
+    return {
+        "last": last_valid(values),
+        "mean": round(sum(values) / len(values), 2),
+        "min": round(min(values), 2),
+        "max": round(max(values), 2),
+    }
+
+
+def make_training_row(pid: str, cols: dict) -> dict:
+    """Extract numeric training features and the sepsis label from a patient record."""
+    row = {
+        "patient_id": pid,
+        "age": last_valid(cols.get("Age", [])),
+        "gender": last_valid(cols.get("Gender", [])),
+        "unit1": last_valid(cols.get("Unit1", [])),
+        "unit2": last_valid(cols.get("Unit2", [])),
+        "icu_hours": last_valid(cols.get("ICULOS", [])),
+    }
+
+    for source, prefix in [
+        ("HR", "hr"),
+        ("SBP", "sbp"),
+        ("O2Sat", "o2"),
+        ("Temp", "temp"),
+        ("Resp", "resp"),
+    ]:
+        stats = summary_stats(cols.get(source, []))
+        row[f"{prefix}_last"] = stats["last"]
+        row[f"{prefix}_mean"] = stats["mean"]
+        row[f"{prefix}_min"] = stats["min"]
+        row[f"{prefix}_max"] = stats["max"]
+
+    row["lac_last"] = last_valid(forward_fill(cols.get("Lactate", [])))
+    row["creatinine_last"] = last_valid(forward_fill(cols.get("Creatinine", [])))
+    row["wbc_last"] = last_valid(forward_fill(cols.get("WBC", [])))
+
+    sepsis_labels = [v for v in cols.get("SepsisLabel", []) if v is not None]
+    row["label"] = 1 if any(v == 1 for v in sepsis_labels) else 0
+    return row
+
+
+def write_train_csv(rows: list[dict]) -> None:
+    os.makedirs(os.path.dirname(TRAIN_OUT_FILE), exist_ok=True)
+    with open(TRAIN_OUT_FILE, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=TRAIN_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def make_patient(pid: str, cols: dict, rng: random.Random) -> dict:
     """Convert parsed PSV columns into a patient dict for the UI."""
     age     = last_valid(cols.get("Age", [])) or rng.randint(35, 85)
@@ -345,6 +434,7 @@ def main():
 
     rng      = random.Random(42)
     patients = []
+    train_rows = []
     skipped  = 0
 
     for psv_path in psv_files:
@@ -354,11 +444,14 @@ def main():
             skipped += 1
             continue
         try:
+            train_rows.append(make_training_row(pid, cols))
             pat = make_patient(pid, cols, rng)
             patients.append(pat)
         except Exception as e:
             skipped += 1
             print(f"  Warning: {pid} → {e}")
+
+    write_train_csv(train_rows)
 
     # Sort by risk descending
     patients.sort(key=lambda p: p["riskScore6h"], reverse=True)
@@ -367,6 +460,7 @@ def main():
     patients = patients[:20]
 
     print(f"Processed {len(patients)} patients  (skipped {skipped})")
+    print(f"Training rows written: {len(train_rows)} → {TRAIN_OUT_FILE}")
     print("Risk breakdown:")
     for cat in ["CRITICAL","HIGH","MODERATE","LOW"]:
         n = sum(1 for p in patients if p["riskCategory"] == cat)

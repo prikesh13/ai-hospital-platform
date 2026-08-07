@@ -12,7 +12,7 @@
  *
  * ⚠️ All data is synthetic. Not for clinical use.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AreaChart, Area, LineChart, Line,
@@ -23,6 +23,8 @@ import {
   Bell, Settings, Download, Calendar, RefreshCw, BarChart2, Shield,
 } from 'lucide-react'
 import { resourceData, recentAlerts, patients, getOccupancyColor } from '../data/realData'
+
+  // Note: Admin can add patients via backend; we fetch manual additions and merge
 
 /* ---- Shared tooltip ---- */
 const ChartTip = ({ active, payload, label, suffix = '%' }) => {
@@ -52,12 +54,90 @@ export default function AdminDashboard() {
     return () => clearInterval(t)
   }, [])
 
-  /* ---- Aggregate KPIs ---- */
-  const totalBeds    = resourceData.wards.reduce((s, w) => s + w.beds,       0)
-  const occupiedBeds = resourceData.wards.reduce((s, w) => s + w.occupied,   0)
-  const totalVents   = resourceData.wards.reduce((s, w) => s + w.vents,      0)
-  const ventsInUse   = resourceData.wards.reduce((s, w) => s + w.ventsInUse, 0)
-  const critCount    = patients.filter(p => p.riskCategory === 'CRITICAL').length
+  // Remote/manual patients fetched from backend and merged with local synthetic data
+  const defaultPatientEntry = {
+    id: '',
+    name: '',
+    age: 60,
+    gender: 'M',
+    ward: 'MICU',
+    bed: '',
+    admitTime: new Date().toISOString(),
+    diagnosis: '',
+    comorbidities: [],
+    riskScore6h: 0.1,
+    riskScore12h: 0.05,
+    riskScore24h: 0.02,
+    riskCategory: 'LOW',
+    alertTriggered: false,
+    isSepsis: false,
+    vitals: {},
+  }
+
+  const [remotePatients, setRemotePatients] = useState([])
+  const [view, setView] = useState('overview')
+  const [showAddPatient, setShowAddPatient] = useState(false)
+  const [newPatient, setNewPatient] = useState(defaultPatientEntry)
+
+  const refreshRemotePatients = async () => {
+    try {
+      const res = await fetch('/api/patients')
+      if (!res.ok) throw new Error('failed to fetch')
+      const data = await res.json()
+      setRemotePatients(Array.isArray(data) ? data : [])
+    } catch (err) {
+      console.warn('Failed to refresh manual patients', err)
+      setRemotePatients([])
+    }
+  }
+
+  const handleSavePatient = async (event) => {
+    event?.preventDefault?.()
+    try {
+      const res = await fetch('/api/patients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newPatient),
+      })
+      const j = await res.json()
+      if (res.ok) {
+        await refreshRemotePatients()
+        setShowAddPatient(false)
+        setNewPatient(defaultPatientEntry)
+      } else {
+        alert('Failed to add patient: ' + (j.detail || JSON.stringify(j)))
+      }
+    } catch (err) {
+      alert('Network error')
+    }
+  }
+
+  useEffect(() => {
+    refreshRemotePatients()
+  }, [])
+
+  const patientsAll = useMemo(() => [...patients, ...remotePatients], [remotePatients])
+
+  const wardCounts = useMemo(() => {
+    const counts = new Map()
+    patientsAll.forEach((patient) => {
+      const ward = (patient?.ward || '').toString().trim().toUpperCase()
+      counts.set(ward, (counts.get(ward) || 0) + 1)
+    })
+    return counts
+  }, [patientsAll])
+
+  const dynamicWardData = useMemo(() => resourceData.wards.map((ward) => {
+    const occupied = wardCounts.get(ward.id.toUpperCase()) ?? ward.occupied
+    const ventsInUse = Math.min(ward.vents, Math.round((occupied / Math.max(1, ward.beds)) * ward.vents))
+    return { ...ward, occupied, ventsInUse }
+  }), [wardCounts])
+
+  const totalBeds    = dynamicWardData.reduce((s, w) => s + w.beds,       0)
+  const occupiedBeds = dynamicWardData.reduce((s, w) => s + w.occupied,   0)
+  const totalVents   = dynamicWardData.reduce((s, w) => s + w.vents,      0)
+  const ventsInUse   = dynamicWardData.reduce((s, w) => s + w.ventsInUse, 0)
+  const critCount    = patientsAll.filter(p => p.riskCategory === 'CRITICAL').length
   const alertCount   = recentAlerts.length
 
   /* ---- Last 8 hour labels for heatmap ---- */
@@ -86,17 +166,34 @@ export default function AdminDashboard() {
             { id: 'view-overview',   label: 'Overview'   },
             { id: 'view-forecast',   label: 'Forecast'   },
             { id: 'view-resources',  label: 'Resources'  },
-          ].map(({ id, label }) => (
-            <button key={id} id={id} className="tab" style={{ borderRadius: 'var(--r-md)', padding: '0.375rem 0.875rem' }}>
-              {label}
-            </button>
-          ))}
+          ].map(({ id, label }) => {
+            const v = id.replace('view-','')
+            return (
+              <button
+                key={id}
+                id={id}
+                className={`tab ${view === v ? 'active' : ''}`}
+                style={{ borderRadius: 'var(--r-md)', padding: '0.375rem 0.875rem' }}
+                onClick={() => {
+                  setView(v)
+                  // scroll to the section if present
+                  setTimeout(() => {
+                    const el = document.getElementById(`${v}-section`)
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }, 50)
+                }}
+              >
+                {label}
+              </button>
+            )
+          })}
         </div>
 
-        <div className="navbar-right">
+          <div className="navbar-right">
           <div className="navbar-status"><div className="status-dot" />Live Data</div>
           <span className="navbar-time">{clock.toLocaleTimeString('en-US', { hour12: false })}</span>
           <button id="btn-admin-alerts" className="navbar-btn has-alert" title="Alerts"><Bell size={15} /></button>
+          <button id="btn-add-patient" className="navbar-btn" title="Add patient" onClick={() => setShowAddPatient(true)}>Add Patient</button>
           <button id="btn-export" className="navbar-btn" title="Export report"><Download size={15} /></button>
           <div id="btn-admin-user" className="navbar-user" onClick={() => navigate('/')}>
             <div className="user-avatar" style={{ background: 'linear-gradient(135deg,#8b5cf6,#6d28d9)' }}>AD</div>
@@ -107,7 +204,101 @@ export default function AdminDashboard() {
 
       {/* ---- Body ---- */}
       <div className="dashboard-body">
-        <div className="admin-body">
+            <div className="admin-body">
+
+              {showAddPatient && (
+                <div className="modal-backdrop" onClick={() => setShowAddPatient(false)}>
+                  <div className="modal-card" onClick={e => e.stopPropagation()}>
+                    <div className="modal-header">
+                      <div>
+                        <h3 className="modal-title">Add Patient</h3>
+                        <p className="modal-description">Add a new patient record to ICU staffing and alert tracking.</p>
+                      </div>
+                      <button type="button" className="btn btn-ghost" onClick={() => setShowAddPatient(false)}>Close</button>
+                    </div>
+                    <form className="modal-form" onSubmit={handleSavePatient}>
+                      <div className="modal-field">
+                        <label htmlFor="patient-id">Patient ID</label>
+                        <input
+                          id="patient-id"
+                          className="modal-input"
+                          placeholder="e.g. P-1002"
+                          value={newPatient.id}
+                          onChange={e => setNewPatient({ ...newPatient, id: e.target.value })}
+                        />
+                      </div>
+                      <div className="modal-field">
+                        <label htmlFor="patient-name">Name</label>
+                        <input
+                          id="patient-name"
+                          className="modal-input"
+                          placeholder="Patient name"
+                          value={newPatient.name}
+                          onChange={e => setNewPatient({ ...newPatient, name: e.target.value })}
+                        />
+                      </div>
+                      <div className="modal-field">
+                        <label htmlFor="patient-age">Age</label>
+                        <input
+                          id="patient-age"
+                          className="modal-input"
+                          type="number"
+                          min="0"
+                          value={newPatient.age}
+                          onChange={e => setNewPatient({ ...newPatient, age: Number(e.target.value) })}
+                        />
+                      </div>
+                      <div className="modal-field">
+                        <label htmlFor="patient-gender">Gender</label>
+                        <select
+                          id="patient-gender"
+                          className="modal-input"
+                          value={newPatient.gender}
+                          onChange={e => setNewPatient({ ...newPatient, gender: e.target.value })}
+                        >
+                          <option value="M">Male</option>
+                          <option value="F">Female</option>
+                          <option value="O">Other</option>
+                        </select>
+                      </div>
+                      <div className="modal-field">
+                        <label htmlFor="patient-ward">Ward</label>
+                        <input
+                          id="patient-ward"
+                          className="modal-input"
+                          placeholder="e.g. MICU"
+                          value={newPatient.ward}
+                          onChange={e => setNewPatient({ ...newPatient, ward: e.target.value })}
+                        />
+                      </div>
+                      <div className="modal-field">
+                        <label htmlFor="patient-bed">Bed</label>
+                        <input
+                          id="patient-bed"
+                          className="modal-input"
+                          placeholder="Bed number"
+                          value={newPatient.bed}
+                          onChange={e => setNewPatient({ ...newPatient, bed: e.target.value })}
+                        />
+                      </div>
+                      <div className="modal-field" style={{ gridColumn: '1 / -1' }}>
+                        <label htmlFor="patient-diagnosis">Diagnosis</label>
+                        <input
+                          id="patient-diagnosis"
+                          className="modal-input"
+                          placeholder="Primary diagnosis"
+                          value={newPatient.diagnosis}
+                          onChange={e => setNewPatient({ ...newPatient, diagnosis: e.target.value })}
+                        />
+                      </div>
+                      <div className="modal-actions">
+                        <button type="button" className="btn btn-ghost" onClick={() => setShowAddPatient(false)}>Cancel</button>
+                        <button type="submit" className="btn btn-primary">Save patient</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
 
           {/* ---- KPI Strip ---- */}
           <div className="kpi-grid">
@@ -143,7 +334,7 @@ export default function AdminDashboard() {
             <div className="kpi-card orange">
               <div className="kpi-card-glow" />
               <div className="kpi-icon orange"><Users size={18} /></div>
-              <div className="kpi-value">{patients.length}</div>
+              <div className="kpi-value">{patientsAll.length}</div>
               <div className="kpi-label">Active ICU Patients</div>
               <div className="kpi-trend neutral">
                 <BarChart2 size={12} />
@@ -215,7 +406,7 @@ export default function AdminDashboard() {
             </div>
 
             {/* Ward Capacity Bars */}
-            <div className="chart-card">
+            <div className="chart-card" id="resources-section">
               <div className="chart-card-header">
                 <div>
                   <div className="chart-card-title">Ward Capacity Status</div>
@@ -223,8 +414,8 @@ export default function AdminDashboard() {
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}>
-                {resourceData.wards.map(ward => {
-                  const pct   = Math.round(ward.occupied / ward.beds * 100)
+                {dynamicWardData.map(ward => {
+                  const pct   = Math.round(ward.occupied / Math.max(1, ward.beds) * 100)
                   const color = getOccupancyColor(pct)
                   return (
                     <div key={ward.id} className="ward-bar-row">
@@ -256,7 +447,7 @@ export default function AdminDashboard() {
           <div className="charts-row-equal">
 
             {/* 7-Day Forecast */}
-            <div className="chart-card">
+            <div className="chart-card" id="forecast-section">
               <div className="chart-card-header">
                 <div>
                   <div className="chart-card-title">ICU Demand Forecast — 7 Days</div>

@@ -22,7 +22,7 @@ import {
   Activity, Bed, Users, Wind, AlertTriangle, TrendingUp, TrendingDown,
   Bell, Settings, Download, Calendar, RefreshCw, BarChart2, Shield,
 } from 'lucide-react'
-import { resourceData, recentAlerts, patients, getOccupancyColor } from '../data/realData'
+import { resourceData, recentAlerts, getOccupancyColor } from '../data/realData'
 
   // Note: Admin can add patients via backend; we fetch manual additions and merge
 
@@ -75,6 +75,7 @@ export default function AdminDashboard() {
   }
 
   const [remotePatients, setRemotePatients] = useState([])
+  const [icuPatients, setIcuPatients] = useState([])
   const [view, setView] = useState('overview')
   const [showAddPatient, setShowAddPatient] = useState(false)
   const [newPatient, setNewPatient] = useState(defaultPatientEntry)
@@ -88,6 +89,18 @@ export default function AdminDashboard() {
     } catch (err) {
       console.warn('Failed to refresh manual patients', err)
       setRemotePatients([])
+    }
+  }
+
+  const refreshIcuPatients = async () => {
+    try {
+      const res = await fetch('/api/patients/icu')
+      if (!res.ok) throw new Error('failed to fetch icu patients')
+      const data = await res.json()
+      setIcuPatients(Array.isArray(data) ? data : [])
+    } catch (err) {
+      console.warn('Admin dashboard icu patient refresh failed', err)
+      setIcuPatients([])
     }
   }
 
@@ -114,9 +127,10 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     refreshRemotePatients()
+    refreshIcuPatients()
   }, [])
 
-  const patientsAll = useMemo(() => [...patients, ...remotePatients], [remotePatients])
+  const patientsAll = useMemo(() => [...icuPatients, ...remotePatients], [icuPatients, remotePatients])
 
   const wardCounts = useMemo(() => {
     const counts = new Map()

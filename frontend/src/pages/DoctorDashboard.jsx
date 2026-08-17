@@ -30,7 +30,7 @@ import {
   Stethoscope, Syringe, Droplet, Wind as WindIcon, CheckCircle,
   PanelRightOpen, PanelRightClose, ArrowRight, Circle,
 } from 'lucide-react'
-import { patients, getRiskClass } from '../data/realData'
+import { getRiskClass } from '../data/realData'
 
 /* ---- Synthetic clinical notes per patient ---- */
 const SYNTHETIC_NOTES = (patient) => [
@@ -253,7 +253,20 @@ export default function DoctorDashboard() {
   const [alertsOpen, setAlertsOpen]     = useState(false)
   const [ackedAlerts, setAckedAlerts]   = useState(new Set())
   const [remotePatients, setRemotePatients] = useState([])
+  const [icuPatients, setIcuPatients] = useState([])
   const [simAnimating, setSimAnimating] = useState(false)
+
+  const refreshIcuPatients = async () => {
+    try {
+      const res = await fetch('/api/patients/icu')
+      if (!res.ok) throw new Error('failed to fetch icu patients')
+      const data = await res.json()
+      setIcuPatients(Array.isArray(data) ? data : [])
+    } catch (err) {
+      console.warn('Doctor dashboard icu patient refresh failed', err)
+      setIcuPatients([])
+    }
+  }
 
   const refreshRemotePatients = async () => {
     try {
@@ -275,10 +288,10 @@ export default function DoctorDashboard() {
   // Set default selected patient (first critical or first overall)
   const allPatients = useMemo(() => {
     const map = new Map()
-    patients.forEach(p => map.set(p.id, p))
+    icuPatients.forEach(p => map.set(p.id, normalizePatient(p)))
     remotePatients.forEach(p => map.set(p.id, normalizePatient(p)))
     return Array.from(map.values())
-  }, [remotePatients])
+  }, [icuPatients, remotePatients])
 
   useEffect(() => {
     if (!selectedId && allPatients.length > 0) {
@@ -289,7 +302,11 @@ export default function DoctorDashboard() {
 
   useEffect(() => {
     refreshRemotePatients()
-    const interval = setInterval(refreshRemotePatients, 20000)
+    refreshIcuPatients()
+    const interval = setInterval(() => {
+      refreshRemotePatients()
+      refreshIcuPatients()
+    }, 20000)
     return () => clearInterval(interval)
   }, [])
 
@@ -331,24 +348,33 @@ export default function DoctorDashboard() {
   const notes     = SYNTHETIC_NOTES(patient)
 
   /* ---- Digital twin simulation ---- */
-  const runSim = useCallback(() => {
+  const runSim = useCallback(async () => {
     if (!patient) return
     setSimAnimating(true)
-    setTimeout(() => {
-      const base   = patient.riskScore6h
-      const hrLast = patient.vitals.heartRate.at(-1).value
-      const bpLast = patient.vitals.systolicBP.at(-1).value
-      const spLast = patient.vitals.spo2.at(-1).value
-      const rrLast = patient.vitals.respiratoryRate.at(-1).value
-      const hrDelta  = (twinVals.heartRate - hrLast) / 120
-      const bpDelta  = (bpLast - twinVals.systolicBP) / 80
-      const spDelta  = (spLast - twinVals.spo2) / 30
-      const rrDelta  = (twinVals.respiratoryRate - rrLast) / 40
-      const delta    = (hrDelta + bpDelta + spDelta + rrDelta) * 0.38
-      const newScore = Math.max(0.03, Math.min(0.98, base - delta))
+    
+    try {
+      const res = await fetch('/predict/twin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: patient.id,
+          twinVals: twinVals
+        })
+      })
+      if (!res.ok) throw new Error('failed to run simulation')
+      const data = await res.json()
+      
+      const base = patient.riskScore6h
+      const newScore = data.sepsis_probability
       setSimResult({ newScore, delta: newScore - base })
+    } catch (err) {
+      console.warn('Simulation failed', err)
+      // Fallback
+      const base = patient.riskScore6h
+      setSimResult({ newScore: base, delta: 0 })
+    } finally {
       setSimAnimating(false)
-    }, 900)
+    }
   }, [patient, twinVals])
 
   const applyPreset = (preset) => {
@@ -411,7 +437,7 @@ export default function DoctorDashboard() {
       {/* ---- Stats Bar ---- */}
       <div className="stats-bar">
         {[
-          { label: 'Total Patients',  value: patients.length,              icon: User,         color: 'var(--brand-blue)' },
+          { label: 'Total Patients',  value: allPatients.length,              icon: User,         color: 'var(--brand-blue)' },
           { label: 'Critical Alerts', value: activeAlerts.length,          icon: AlertTriangle, color: 'var(--risk-critical)' },
           { label: 'Avg Risk Score',  value: `${Math.round(avgRisk * 100)}%`, icon: TrendingUp,    color: 'var(--risk-moderate)' },
           { label: 'Improving',       value: improvedCount,                icon: TrendingDown,  color: 'var(--risk-low)' },
